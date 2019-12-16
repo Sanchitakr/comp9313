@@ -1,0 +1,227 @@
+/* Comp9313 assignment 2*/
+/*In this assignment we assume there is no abandoned node, meaning that each node at least has one edge to another node.
+The minimum weight of an edge between two individual nodes is 1.
+You need to use Spark Core (not GraphX or similar solutions) to implement a solution for this given problem.
+The output must be sorted (ascending) by length of shortest path.
+The output should be written into a txt file.
+The output should be formatted as follow ( as shown in the example below) containing 3 columns, comma delimited : first column contains the destination node, followed by the length of the shortest path in the second column, and the actual shortest path from the starting node to the destination node.
+You should NOT assume that the starting node is always N0 (it can be any given node).
+*/
+/* Algorithm Parallel BFS. 
+  1.For each node, the program iterates through adjacency list (key:adjacent_node , value:weight). 
+  2.For each adjacent node in the list, it creates a (node_id, details) pair.
+	   where,
+	    node_id is the id of the adjacent node 
+		details is the Graph_Details class of the adjacent node. 
+  3.The shortest distance to the source of the adjacent node = shortest distance of current node +  weight(edge) 
+	if the shortest distance of current node is unknown, then the shortest distance of the adjacent node is infinity represented as -1
+  */
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+
+import org.apache.spark.Accumulator;
+import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaPairRDD;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.api.java.function.FlatMapFunction;
+import org.apache.spark.api.java.function.Function;
+import org.apache.spark.api.java.function.Function2;
+import org.apache.spark.api.java.function.PairFlatMapFunction;
+import org.apache.spark.api.java.function.PairFunction;
+
+import scala.Tuple2;
+
+public class AssigTwoz5084927 {
+
+	// The details class stores all necessary details of a node
+	private static class Details implements Serializable{
+		
+		String node_id;
+		int distance_to_source;
+		HashMap<String, Integer> adjacency_list;
+		int num_Updated;
+		
+		public Details(String node_id,String source_node,String adjacent_node, int weight) {
+			this.node_id = node_id;
+			this.distance_to_source = (node_id.equals(source_node))?0:Integer.MAX_VALUE;
+			this.adjacency_list = new HashMap<String,Integer>();
+			adjacency_list.put(adjacent_node, weight);
+			this.num_Updated = 0;
+			
+		}
+		
+		public Details(String node_id) {
+			this.node_id = node_id;
+			this.distance_to_source = Integer.MAX_VALUE;
+			this.adjacency_list = new HashMap<String,Integer>();
+			this.num_Updated = 0;
+		}
+		
+		
+		public void merge_adjacent_list (Details target_node) {
+			
+			this.adjacency_list.putAll(target_node.getAdjacency_list());
+		}
+
+		public HashMap<String, Integer> getAdjacency_list() {
+			return adjacency_list;
+		}
+
+		public void setAdjacency_list(HashMap<String, Integer> adjacency_list) {
+			this.adjacency_list = adjacency_list;
+		}
+
+
+		public int getDistance_to_source() {
+			return distance_to_source;
+		}
+
+
+		public void setDistance_to_source(int new_distance) {
+			if (this.distance_to_source < new_distance) {
+				this.num_Updated += 1;
+			}
+			this.distance_to_source = new_distance;
+			
+		}
+		
+		
+		public int numUpdated() {
+			return num_Updated;
+		}
+
+		public void setNumUpdated(int num) {
+			this.num_Updated = num;
+		}
+		public void incNumUpdate() {
+			this.num_Updated += 1;
+		}
+
+		public ArrayList<Tuple2<String,Details>> emit(){
+			ArrayList<Tuple2<String,Details>> emit = new ArrayList<Tuple2<String,Details>>();
+			for (Map.Entry<String, Integer> node : adjacency_list.entrySet()) {
+				String adjacent_node_id = node.getKey();
+				int edge_weight = node.getValue();
+				Details adjacent_node_detail = new Details(adjacent_node_id);
+				int new_ds = 0;
+				if (getDistance_to_source() == Integer.MAX_VALUE) {
+					new_ds = Integer.MAX_VALUE;
+				} else {
+					new_ds = edge_weight + getDistance_to_source();
+				}
+				adjacent_node_detail.setDistance_to_source(new_ds);
+				emit.add(new Tuple2<String,Details>(adjacent_node_id,adjacent_node_detail));
+			}
+			
+			emit.add(new Tuple2<String,Details>(node_id,this));
+			return emit;
+			
+		}
+		
+		@Override
+		public String toString() {
+			return node_id + "," + distance_to_source+ ", "+num_Updated;
+		}
+		
+		
+		
+	}
+	
+	public boolean if_graph_updated(JavaPairRDD<String,Details> graph) {
+		return false;
+		
+	}
+	
+	public static void main(String [] args) {
+		
+		
+		
+		SparkConf conf = new SparkConf()
+				.setMaster("local")
+				.setAppName("Assignment2");
+		
+		JavaSparkContext context = new JavaSparkContext(conf);
+		
+		JavaRDD<String> input = context.textFile(args[1]);
+		
+		String source_node = args[0];
+		
+		JavaPairRDD<String,Details> node_details = input.mapToPair(new PairFunction<String,String,Details>(){
+
+			@Override
+			public Tuple2<String,Details> call(String line) throws Exception {
+				
+				String[] parts = line.split(",");
+				String start_node = parts[0];
+				String end_node = parts[1];
+				int weight = Integer.parseInt(parts[2]);
+				
+				Details details = new Details(start_node,source_node,end_node,weight);
+				
+				return new Tuple2<String,Details>(start_node,details);
+				
+			}
+				
+		});
+		
+		
+		JavaPairRDD<String,Details> graph = node_details.reduceByKey((Function2<Details,Details,Details>) (d1,d2) -> {
+			d1.merge_adjacent_list(d2);
+			return d1;
+		});
+		
+		for (int i = 1;i <= 2;i++) {	
+			if (i == 2) {
+				graph.saveAsTextFile(args[2]);
+			}
+			graph = graph.mapToPair(new PairFunction<Tuple2<String,Details>,String,Details>(){
+
+				@Override
+				public Tuple2<String, Details> call(Tuple2<String, Details> node_info) throws Exception {
+					
+					String node_id = node_info._1;
+					Details node_detail = node_info._2;
+					node_detail.setNumUpdated(0);
+					
+					return new Tuple2<String,Details>(node_id,node_detail);
+					
+				}
+				
+			});
+
+			graph = graph.flatMapToPair(new PairFlatMapFunction<Tuple2<String,Details>,String,Details>(){
+		
+				@Override
+				public Iterator<Tuple2<String, Details>> call(Tuple2<String, Details> node_tuple) throws Exception {
+					Details node_detail = node_tuple._2;
+					return node_detail.emit().iterator();
+				}
+				
+			});
+	
+			graph = graph.reduceByKey((Function2<Details,Details,Details>) (d1,d2) -> {
+				d1.merge_adjacent_list(d2);
+				
+				
+				if (d1.getDistance_to_source() > d2.getDistance_to_source()) {
+					d1.setDistance_to_source(d2.getDistance_to_source());
+				
+				} else {
+					d1.setDistance_to_source(d1.getDistance_to_source());
+				}
+				
+				return d1;
+			});
+			
+
+		}
+		
+		
+	}
+}
